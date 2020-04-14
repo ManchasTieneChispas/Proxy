@@ -13,6 +13,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <unistd.h>
+#include <ctype.h>
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -44,24 +45,6 @@ typedef enum {
     PARSE_DYNAMIC
 } parse_result;
 
-/*
- * read_requesthdrs - read HTTP request headers
- * Returns true if an error occurred, or false otherwise.
- */
-bool read_requesthdrs(rio_t *rp) {
-    char buf[MAXLINE];
-
-    do {
-        if (rio_readlineb(rp, buf, MAXLINE) <= 0) {
-            return true;
-        }
-
-        printf("%s", buf);
-    } while(strncmp(buf, "\r\n", sizeof("\r\n")));
-
-    return false;
-}
-
 
 /*
  * parse_uri - parse URI into filename and CGI args
@@ -75,8 +58,13 @@ bool read_requesthdrs(rio_t *rp) {
  * Returns the appropriate parse result for the type of request.
  */
 parse_result parse_uri(char *uri, char *filename, char *cgiargs) {
+    /* Assume URI starts with / */
+    if (uri[0] != '/') {
+        return PARSE_ERROR;
+    }
+
     /* Check if the URI contains "cgi-bin" */
-    if (strstr(uri, "cgi-bin")) { /* Dynamic content */
+    if (strncmp(uri, "/cgi-bin/", strlen("/cgi-bin/")) == 0) { /* Dynamic content */
         char *args = strchr(uri, '?');  /* Find the CGI args */
         if (!args) {
             *cgiargs = '\0';    /* No CGI args */
@@ -101,12 +89,17 @@ parse_result parse_uri(char *uri, char *filename, char *cgiargs) {
     /* No CGI args */
     *cgiargs = '\0';
 
+    /* Make a valiant effort to prevent directory traversal attacks */
+    if (strstr(uri, "/../") != NULL) {
+        return PARSE_ERROR;
+    }
+
     /* Check if the client is requesting a directory */
     bool is_dir = uri[strnlen(uri, MAXLINE) - 1] == '/';
 
     /* Format the filename; if requesting a directory, use the home file */
     if (snprintf(filename, MAXLINE, ".%s%s",
-                uri, is_dir ? "home.html" : "") >= MAXLINE) {
+                 uri, is_dir ? "home.html" : "") >= MAXLINE) {
         return PARSE_ERROR; // Overflow!
     }
 
@@ -246,8 +239,8 @@ void serve_dynamic(int fd, char *filename, char *cgiargs) {
 /*
  * clienterror - returns an error message to the client
  */
-void clienterror(int fd, char *cause, char *errnum,
-        char *shortmsg, char *longmsg) {
+void clienterror(int fd, const char *errnum, const char *shortmsg,
+                 const char *longmsg) {
     char buf[MAXLINE];
     char body[MAXBUF];
     size_t buflen;
@@ -260,10 +253,10 @@ void clienterror(int fd, char *cause, char *errnum,
             "<head><title>Tiny Error</title></head>\r\n" \
             "<body bgcolor=\"ffffff\">\r\n" \
             "<h1>%s: %s</h1>\r\n" \
-            "<p>%s: %s</p>\r\n" \
+            "<p>%s</p>\r\n" \
             "<hr /><em>The Tiny Web server</em>\r\n" \
             "</body></html>\r\n", \
-            errnum, shortmsg, longmsg, cause);
+            errnum, shortmsg, longmsg);
     if (bodylen >= MAXBUF) {
         return; // Overflow!
     }
@@ -292,6 +285,42 @@ void clienterror(int fd, char *cause, char *errnum,
 }
 
 /*
+ * read_requesthdrs - read HTTP request headers
+ * Returns true if an error occurred, or false otherwise.
+ */
+bool read_requesthdrs(client_info *client, rio_t *rp) {
+    char buf[MAXLINE];
+    char name[MAXLINE];
+    char value[MAXLINE];
+
+    while (true) {
+        if (rio_readlineb(rp, buf, sizeof(buf)) <= 0) {
+            return true;
+        }
+
+        /* Check for end of request headers */
+        if (strcmp(buf, "\r\n") == 0) {
+            return false;
+        }
+
+        /* Parse header into name and value */
+        if (sscanf(buf, "%[^:]: %[^\r\n]", name, value) != 2) {
+            /* Error parsing header */
+            clienterror(client->connfd, "400", "Bad Request",
+                        "Tiny could not parse request headers");
+            return true;
+        }
+
+        /* Convert name to lowercase */
+        for (size_t i = 0; name[i] != '\0'; i++) {
+            name[i] = tolower(name[i]);
+        }
+
+        printf("%s: %s\n", name, value);
+    }
+}
+
+/*
  * serve - handle one HTTP request/response transaction
  */
 void serve(client_info *client) {
@@ -314,7 +343,7 @@ void serve(client_info *client) {
 
     /* Read request line */
     char buf[MAXLINE];
-    if (rio_readlineb(&rio, buf, MAXLINE) <= 0) {
+    if (rio_readlineb(&rio, buf, sizeof(buf)) <= 0) {
         return;
     }
 
@@ -329,20 +358,20 @@ void serve(client_info *client) {
     /* version must be either HTTP/1.0 or HTTP/1.1 */
     if (sscanf(buf, "%s %s HTTP/1.%c", method, uri, &version) != 3
             || (version != '0' && version != '1')) {
-        clienterror(client->connfd, buf, "400", "Bad Request",
-                "Tiny received a malformed request");
+        clienterror(client->connfd, "400", "Bad Request",
+                    "Tiny received a malformed request");
         return;
     }
 
     /* Check that the method is GET */
-    if (strncmp(method, "GET", sizeof("GET"))) {
-        clienterror(client->connfd, method, "501", "Not Implemented",
-                "Tiny does not implement this method");
+    if (strcmp(method, "GET") != 0) {
+        clienterror(client->connfd, "501", "Not Implemented",
+                    "Tiny does not implement this method");
         return;
     }
 
     /* Check if reading request headers caused an error */
-    if (read_requesthdrs(&rio)) {
+    if (read_requesthdrs(client, &rio)) {
         return;
     }
 
@@ -350,30 +379,30 @@ void serve(client_info *client) {
     char filename[MAXLINE], cgiargs[MAXLINE];
     parse_result result = parse_uri(uri, filename, cgiargs);
     if (result == PARSE_ERROR) {
-        clienterror(client->connfd, uri, "400", "Bad Request",
-                "Tiny could not parse the request URI");
+        clienterror(client->connfd, "400", "Bad Request",
+                    "Tiny could not parse the request URI");
         return;
     }
 
     /* Attempt to stat the file */
     struct stat sbuf;
     if (stat(filename, &sbuf) < 0) {
-        clienterror(client->connfd, filename, "404", "Not found",
-                "Tiny couldn't find this file");
+        clienterror(client->connfd, "404", "Not found",
+                    "Tiny couldn't find this file");
         return;
     }
 
     if (result == PARSE_STATIC) { /* Serve static content */
         if (!(S_ISREG(sbuf.st_mode)) || !(S_IRUSR & sbuf.st_mode)) {
-            clienterror(client->connfd, filename, "403", "Forbidden",
-                    "Tiny couldn't read the file");
+            clienterror(client->connfd, "403", "Forbidden",
+                        "Tiny couldn't read the file");
             return;
         }
         serve_static(client->connfd, filename, sbuf.st_size);
     } else { /* Serve dynamic content */
         if (!(S_ISREG(sbuf.st_mode)) || !(S_IXUSR & sbuf.st_mode)) {
-            clienterror(client->connfd, filename, "403", "Forbidden",
-                    "Tiny couldn't run the CGI program");
+            clienterror(client->connfd, "403", "Forbidden",
+                        "Tiny couldn't run the CGI program");
             return;
         }
         serve_dynamic(client->connfd, filename, cgiargs);

@@ -13,7 +13,7 @@
 SHELL = /bin/bash
 CC = gcc
 CFLAGS = -g -Og -Wall -std=c99 -MMD -D_FORTIFY_SOURCE=2 -D_XOPEN_SOURCE=700
-LDLIBS = -lpthread
+LDLIBS = -lpthread -lm -lpcre
 
 # Uncomment this to enable debug macros
 # CFLAGS += -DDEBUG
