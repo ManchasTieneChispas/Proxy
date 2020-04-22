@@ -1,4 +1,5 @@
-/*
+/* @author William Giraldo (wgiraldo)
+ *
  * Starter code for proxy lab.
  * Feel free to modify this code in whatever way you wish.
  */
@@ -44,6 +45,18 @@
 #define MAX_CACHE_SIZE (1024*1024)
 #define MAX_OBJECT_SIZE (100*1024)
 
+/* Typedef for convenience */
+typedef struct sockaddr SA;
+
+/* Information about a connected client. This is adapted from TINY server */
+typedef struct {
+    struct sockaddr_in addr;    // Socket address
+    socklen_t addrlen;          // Socket address length
+    int connfd;                 // Client connection file descriptor
+    char host[HOSTLEN];         // Client host
+    char serv[SERVLEN];         // Client service (port)
+} client_info;
+
 /*
  * String to use for the User-Agent header.
  * Don't forget to terminate with \r\n
@@ -53,6 +66,30 @@ static const char *header_user_agent = "Mozilla/5.0"
                                     " Gecko/20191101 Firefox/63.0.1";
 
 int main(int argc, char** argv) {
-    printf("%s", header_user_agent);
+    printf("%s\n", header_user_agent);
+
+    /*check if a port was passed */
+    if(argc != 2) {
+      printf("Please pass a port to wait for connections on\n");
+      exit(1);
+    }
+
+    listenfd = open_listenfd(argv[1]);
+    if(listenfd < 0) {
+      printf("Failed to listen on port \n", argv[1]);
+    }
+
+    /*Create space for client info. This section adapted from TINY server */
+    client_info client_data;
+    client_info *client = &client_data;
+
+    client->connfd = accept(listenfd, (SA*)&client->addr, client->addrlen);
+    if(client->connfd < 0) {
+      printf("Accept error: %s\n", strerror(errno));
+      exit(1);
+    }
+
+    
+
     return 0;
 }
