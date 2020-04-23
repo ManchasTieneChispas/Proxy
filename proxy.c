@@ -188,14 +188,18 @@ parse_result parse_uri(char *uri, char *filename, char *cgiargs) {
 
 /* The following code has parts adapted from TINY server (tiny.c)
  *
- * read_requesthdrs - read HTTP request headers
+ * read_requesthdrs - read HTTP request headers. If there is a host header,
+ * then it puts it into host. If there is any headers besides Host,
+ * User-Agent, Connection, and Proxy-Connection, then it combines them and
+ * places them into rest
  *
  * Returns true if an error occurred, or false otherwise.
  */
-bool read_requesthdrs(client_info *client, rio_t *rp) {
+bool read_requesthdrs(client_info *client, rio_t *rp, char *host, char *rest) {
     char buf[MAXLINE];
     char name[MAXLINE];
     char value[MAXLINE];
+    size_t prev_write = 0;
 
     while (true) {
         if (rio_readlineb(rp, buf, sizeof(buf)) <= 0) {
@@ -211,17 +215,29 @@ bool read_requesthdrs(client_info *client, rio_t *rp) {
         if (sscanf(buf, "%[^:]: %[^\r\n]", name, value) != 2) {
             /* Error parsing header */
             clienterror(client->connfd, "400", "Bad Request",
-                        "Tiny could not parse request headers");
+                        "Proxy could not parse request headers");
             return true;
         }
 
-        /* Convert name to lowercase */
-        for (size_t i = 0; name[i] != '\0'; i++) {
-            name[i] = tolower(name[i]);
+        if(strcmp(name, "Host") == 0) {
+          snprintf(host, MAXLINE,"%s: %s\r\n", name, value);
         }
+
+        if(strcmp(name, "Host") != 0 &&
+           strcmp(name, "User-Agent") != 0 &&
+           strcmp(name, "Connection") != 0 &&
+           strcmp(name, "Proxy-Connection") != 0) {
+          prev_write += snprintf(rest + prev_write, MAXBUF - prev_write, "%s: %s\r\n", name, value);
+        }
+
+        // /* Convert name to lowercase */
+        // for (size_t i = 0; name[i] != '\0'; i++) {
+        //     name[i] = tolower(name[i]);
+        // }
 
         printf("%s: %s\n", name, value);
     }
+    return host;
 }
 
 
@@ -279,8 +295,12 @@ void serve(client_info *client) {
       return;
   }
 
-  /* Check if reading request headers caused an error */
-  if (read_requesthdrs(client, &rio)) {
+  char host_header[MAXBUF];
+  char other_headers[MAXBUF];
+  host_header[0] = '\0';
+  /* Check if reading request headers caused an error, and read Host header
+     into host_header */
+  if (read_requesthdrs(client, &rio, &host_header, &other_headers)) {
       return;
   }
 
@@ -293,26 +313,50 @@ void serve(client_info *client) {
   //     return;
   // }
 
-  /* Determine connection port */
+  /* Determine connection port, hostname and directory*/
   int port_int;
   int res;
   char port[MAXLINE];
   char url[MAXLINE];
-  if((res = sscanf("%s:%d", &url, &port_int)) == 1) {
+  char dir[MAXLINE];
+  char hostname[MAXLINE];
+  //split hostname and directory cmu.edu/hi/this
+  if((res = sscanf(uri, "%s/%s", url, dir)) == 1) { //http:// fix
+    dir[0] = '\0';
+  } else if(res != 2) {
+    clienterror(client->connfd, "400", "malformed uri");
+    //close fd
+    return;
+  }
+  //split url and port
+  if((res = sscanf(url, "%s:%d", hostname, &port_int)) == 1) {
     snprintf(port, sizeof(port), "%d", 80);
   } else if(res == 2) {
     snprintf(port, sizeof(port), "%d", port_int);
   } else {
-    clienterror(client->connfd, "400", "malformed uri");
+    clienterror(client->connfd, "400", "malformed url");
+    // close client fd
     return;
   }
 
+  /*Determine if client sent a Host in header */
+
+
   /* Establish connection with server */
   int serverfd;
-  if((serverfd = open_clientfd(url, port)) < 0) {
+  if((serverfd = open_clientfd(hostname, port)) < 0) {
     clienterror(client->connfd, "400", "Proxy cannot reach destination");
     return;
   }
+
+  /* Create and send HTTP requst with headers */ // CAN I ASSUME THAT REQUEST HEADERS ARE ORDERED, BEST WAY TO PARSE
+  char get_req[MAXLINE];
+  size_t get_req_length = snprintf(get_req, sizeof(get_req), "GET / %s HTTP/1.0\r\n")
+
+  char request[MAXBUF];
+  size_t request_length = snprintf(request, MAXBUF, )
+
+  // rio_readnb 
 
 }
 
