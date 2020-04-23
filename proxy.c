@@ -385,41 +385,58 @@ void serve(client_info *client) {
     /* Send the request to the server */
     if (rio_writen(serverfd, get_req, req_length) < 0) {
         fprintf(stderr, "Error writing to server\n");
-        return;
-    }
-
-    /* Read first response line, check error code */
-    char error_code[MAXLINE];
-    char error_msg[MAXLINE];
-    char serv_version;
-    /* sscanf must parse exactly 3 things for response line to be well-formed */
-    /* version must be either HTTP/1.0 or HTTP/1.1 */
-    if (sscanf(buf, "HTTP/1.%c %s %s", &serv_version, error_code, error_msg) !=
-            3 ||
-        (version != '0' && version != '1')) {
-        clienterror(client->connfd, "400", "Bad Response",
-                    "Proxy received a malformed Response");
         close(serverfd);
         return;
     }
 
-    if (strcmp(error_code, "200") != 0) {
-        printf("Bad things: %s: %s", error_code, error_msg);
-        close(serverfd);
-        return;
+    // /* Read first response line, check error code */
+    // char error_code[MAXLINE];
+    // char error_msg[MAXLINE];
+    // char serv_version;
+    // /* sscanf must parse exactly 3 things for response line to be well-formed
+    // */
+    // /* version must be either HTTP/1.0 or HTTP/1.1 */
+    // if (sscanf(buf, "HTTP/1.%c %s %s", &serv_version, error_code, error_msg)
+    // !=
+    //         3 ||
+    //     (version != '0' && version != '1')) {
+    //     clienterror(client->connfd, "400", "Bad Response",
+    //                 "Proxy received a malformed Response");
+    //     close(serverfd);
+    //     return;
+    // }
+    //
+    // if (strcmp(error_code, "200") != 0) {
+    //     printf("Bad things: %s: %s", error_code, error_msg);
+    //     close(serverfd);
+    //     return;
+    // }
+    //
+    // /* Read res of server response headers */
+    // if (read_responsehdrs(client, &s_rio)) {
+    //     close(serverfd);
+    //     return;
+    // }
+
+    // use calloc to 0 out
+    char *res_buf = Calloc((MAX_OBJECT_SIZE) + MAXBUF, 1);
+
+    int bytes_in;
+    while ((bytes_in = rio_readnb(&s_rio, res_buf, 4096)) != 0) {
+        if (rio_writen(client->connfd, res_buf, bytes_in) < 0) {
+            fprintf(stderr, "Error writing to server\n");
+            close(serverfd);
+            return;
+        }
+        memset(res_buf, 0, bytes_in);
     }
 
-    /* Read res of server response headers */
-    if (read_responsehdrs(client, &s_rio)) {
-        close(serverfd);
-        return;
-    }
-
-    /* Read in rest of reponse from server */
+    close(serverfd);
 }
 
 int main(int argc, char **argv) {
-    // printf("%s\n", header_user_agent);
+
+    Signal(SIGPIPE, SIG_IGN);
 
     /*check if a port was passed */
     if (argc != 2) {
@@ -435,14 +452,17 @@ int main(int argc, char **argv) {
     /*Create space for client info. This section adapted from TINY server */
     client_info client_data;
     client_info *client = &client_data;
+    int clientfd;
+    while ((clientfd =
+                accept(listenfd, (SA *)&client->addr, &client->addrlen)) >= 0) {
+        client->connfd = clientfd;
+        if (client->connfd < 0) {
+            printf("Accept error: %s\n", strerror(errno));
+            exit(1);
+        }
 
-    client->connfd = accept(listenfd, (SA *)&client->addr, &client->addrlen);
-    if (client->connfd < 0) {
-        printf("Accept error: %s\n", strerror(errno));
-        exit(1);
+        serve(client);
+        close(client->connfd);
     }
-
-    serve(client);
-    close(client->connfd);
     return 0;
 }

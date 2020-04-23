@@ -1,0 +1,9 @@
+Resonse Headers: GET /random-text.txt HTTP/1.0
+Host: makoshark.ics.cs.cmu.edu:21561
+User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:3.10.0) Gecko/20191101 Firefox/63.0.1
+Connection: close
+Proxy-Connection: close
+Request-ID: f1
+Response: Immediate
+
+
