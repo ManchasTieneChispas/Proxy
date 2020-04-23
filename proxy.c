@@ -8,23 +8,23 @@
 
 #include "csapp.h"
 
+#include <assert.h>
+#include <ctype.h>
+#include <inttypes.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <ctype.h>
-#include <stdbool.h>
-#include <inttypes.h>
 #include <unistd.h>
-#include <assert.h>
 
+#include <errno.h>
+#include <netdb.h>
+#include <netinet/in.h>
 #include <pthread.h>
 #include <signal.h>
-#include <errno.h>
-#include <netinet/in.h>
-#include <sys/types.h>
 #include <sys/socket.h>
-#include <netdb.h>
+#include <sys/types.h>
 
 /*
  * Debug macros, which can be enabled by adding -DDEBUG in the Makefile
@@ -38,45 +38,38 @@
 #define dbg_printf(...)
 #endif
 
+#define HOSTLEN 256
+#define SERVLEN 8
+
 /*
  * Max cache and object sizes
  * You might want to move these to the file containing your cache implementation
  */
-#define MAX_CACHE_SIZE (1024*1024)
-#define MAX_OBJECT_SIZE (100*1024)
+#define MAX_CACHE_SIZE (1024 * 1024)
+#define MAX_OBJECT_SIZE (100 * 1024)
 
 /* Typedef for convenience */
 typedef struct sockaddr SA;
 
 /* Information about a connected client. This is adapted from TINY server */
 typedef struct {
-    struct sockaddr_in addr;    // Socket address
-    socklen_t addrlen;          // Socket address length
-    int connfd;                 // Client connection file descriptor
-    char host[HOSTLEN];         // Client host
-    char serv[SERVLEN];         // Client service (port)
+    struct sockaddr_in addr; // Socket address
+    socklen_t addrlen;       // Socket address length
+    int connfd;              // Client connection file descriptor
+    char host[HOSTLEN];      // Client host
+    char serv[SERVLEN];      // Client service (port)
 } client_info;
 
 /* URI parsing results. Adapted from TINY server */
-typedef enum {
-    PARSE_ERROR,
-    PARSE_STATIC,
-    PARSE_DYNAMIC
-} parse_result;
+typedef enum { PARSE_ERROR, PARSE_STATIC, PARSE_DYNAMIC } parse_result;
 
 /*
  * String to use for the User-Agent header.
  * Don't forget to terminate with \r\n
  */
 static const char *header_user_agent = "Mozilla/5.0"
-                                    " (X11; Linux x86_64; rv:3.10.0)"
-                                    " Gecko/20191101 Firefox/63.0.1";
-
-
-
-
-
-
+                                       " (X11; Linux x86_64; rv:3.10.0)"
+                                       " Gecko/20191101 Firefox/63.0.1";
 
 /* This code is adapted from TINY server (tiny.c)
  * clienterror - returns an error message to the client
@@ -90,25 +83,25 @@ void clienterror(int fd, const char *errnum, const char *shortmsg,
 
     /* Build the HTTP response body */
     bodylen = snprintf(body, MAXBUF,
-            "<!DOCTYPE html>\r\n" \
-            "<html>\r\n" \
-            "<head><title>Tiny Error</title></head>\r\n" \
-            "<body bgcolor=\"ffffff\">\r\n" \
-            "<h1>%s: %s</h1>\r\n" \
-            "<p>%s</p>\r\n" \
-            "<hr /><em>The Tiny Web server</em>\r\n" \
-            "</body></html>\r\n", \
-            errnum, shortmsg, longmsg);
+                       "<!DOCTYPE html>\r\n"
+                       "<html>\r\n"
+                       "<head><title>Proxy Error</title></head>\r\n"
+                       "<body bgcolor=\"ffffff\">\r\n"
+                       "<h1>%s: %s</h1>\r\n"
+                       "<p>%s</p>\r\n"
+                       "<hr /><em>The PRoxyLab Proxy</em>\r\n"
+                       "</body></html>\r\n",
+                       errnum, shortmsg, longmsg);
     if (bodylen >= MAXBUF) {
         return; // Overflow!
     }
 
     /* Build the HTTP response headers */
     buflen = snprintf(buf, MAXLINE,
-            "HTTP/1.0 %s %s\r\n" \
-            "Content-Type: text/html\r\n" \
-            "Content-Length: %zu\r\n\r\n", \
-            errnum, shortmsg, bodylen);
+                      "HTTP/1.0 %s %s\r\n"
+                      "Content-Type: text/html\r\n"
+                      "Content-Length: %zu\r\n\r\n",
+                      errnum, shortmsg, bodylen);
     if (buflen >= MAXLINE) {
         return; // Overflow!
     }
@@ -144,17 +137,18 @@ parse_result parse_uri(char *uri, char *filename, char *cgiargs) {
     }
 
     /* Check if the URI contains "cgi-bin" */
-    if (strncmp(uri, "/cgi-bin/", strlen("/cgi-bin/")) == 0) { /* Dynamic content */
-        char *args = strchr(uri, '?');  /* Find the CGI args */
+    if (strncmp(uri, "/cgi-bin/", strlen("/cgi-bin/")) ==
+        0) {                           /* Dynamic content */
+        char *args = strchr(uri, '?'); /* Find the CGI args */
         if (!args) {
-            *cgiargs = '\0';    /* No CGI args */
+            *cgiargs = '\0'; /* No CGI args */
         } else {
             /* Format the CGI args */
             if (snprintf(cgiargs, MAXLINE, "%s", args + 1) >= MAXLINE) {
                 return PARSE_ERROR; // Overflow!
             }
 
-            *args = '\0';   /* Remove the args from the URI string */
+            *args = '\0'; /* Remove the args from the URI string */
         }
 
         /* Format the filename */
@@ -178,8 +172,8 @@ parse_result parse_uri(char *uri, char *filename, char *cgiargs) {
     bool is_dir = uri[strnlen(uri, MAXLINE) - 1] == '/';
 
     /* Format the filename; if requesting a directory, use the home file */
-    if (snprintf(filename, MAXLINE, ".%s%s",
-                 uri, is_dir ? "home.html" : "") >= MAXLINE) {
+    if (snprintf(filename, MAXLINE, ".%s%s", uri, is_dir ? "home.html" : "") >=
+        MAXLINE) {
         return PARSE_ERROR; // Overflow!
     }
 
@@ -219,15 +213,15 @@ bool read_requesthdrs(client_info *client, rio_t *rp, char *host, char *rest) {
             return true;
         }
 
-        if(strcmp(name, "Host") == 0) {
-          snprintf(host, MAXLINE,"%s: %s\r\n", name, value);
+        if (strcmp(name, "Host") == 0) {
+            snprintf(host, MAXLINE, "%s: %s\r\n", name, value);
         }
 
-        if(strcmp(name, "Host") != 0 &&
-           strcmp(name, "User-Agent") != 0 &&
-           strcmp(name, "Connection") != 0 &&
-           strcmp(name, "Proxy-Connection") != 0) {
-          prev_write += snprintf(rest + prev_write, MAXBUF - prev_write, "%s: %s\r\n", name, value);
+        if (strcmp(name, "Host") != 0 && strcmp(name, "User-Agent") != 0 &&
+            strcmp(name, "Connection") != 0 &&
+            strcmp(name, "Proxy-Connection") != 0) {
+            prev_write += snprintf(rest + prev_write, MAXBUF - prev_write,
+                                   "%s: %s\r\n", name, value);
         }
 
         // /* Convert name to lowercase */
@@ -240,6 +234,32 @@ bool read_requesthdrs(client_info *client, rio_t *rp, char *host, char *rest) {
     return host;
 }
 
+int get_conn_info(client_info *client, char *uri, char *hostname, char *port,
+                  char *dir) {
+    char url[MAXLINE];
+
+    // split hostname and directory
+    int res = sscanf(uri, "http://%[^/]/%s", url, dir);
+    if (res == 1) {
+        dir[0] = '\0';
+    } else if (res != 2) {
+        clienterror(client->connfd, "400", "malformed uri",
+                    "proxy could not parse the uri");
+        return -1;
+    }
+
+    // split url and port
+    res = sscanf(url, "%[^:]:%s", hostname, port);
+    if (res == 1) {
+        port = "80";
+    } else if (res != 2) {
+        clienterror(client->connfd, "400", "malformed url",
+                    "Proxy could not parse the URL");
+        return -1;
+    }
+
+    return 0;
+}
 
 /* The following code contains pieces adapted from TINY server (tiny.c)
  *
@@ -250,141 +270,127 @@ bool read_requesthdrs(client_info *client, rio_t *rp, char *host, char *rest) {
  * Requires that client contains valid information
  */
 void serve(client_info *client) {
-  // Get some extra info about the client (hostname/port)
-  int res = getnameinfo(
-          (SA *) &client->addr, client->addrlen,
-          client->host, sizeof(client->host),
-          client->serv, sizeof(client->serv),
-          0);
-  if (res == 0) {
-      printf("Accepted connection from %s:%s\n", client->host, client->serv);
-  }
-  else {
-      fprintf(stderr, "getnameinfo failed: %s\n", gai_strerror(res));
-  }
+    // Get some extra info about the client (hostname/port)
+    int res = getnameinfo((SA *)&client->addr, client->addrlen, client->host,
+                          sizeof(client->host), client->serv,
+                          sizeof(client->serv), 0);
+    if (res == 0) {
+        printf("Accepted connection from %s:%s\n", client->host, client->serv);
+    } else {
+        fprintf(stderr, "getnameinfo failed: %s\n", gai_strerror(res));
+    }
 
-  rio_t rio;
-  rio_readinitb(&rio, client->connfd);
+    rio_t rio;
+    rio_readinitb(&rio, client->connfd);
 
-  /* Read request line */
-  char buf[MAXLINE];
-  if (rio_readlineb(&rio, buf, sizeof(buf)) <= 0) {
-      return;
-  }
+    /* Read request line */
+    char buf[MAXLINE];
+    if (rio_readlineb(&rio, buf, sizeof(buf)) <= 0) {
+        return;
+    }
 
-  printf("%s", buf);
+    printf("%s", buf);
 
-  /* Parse the request line and check if it's well-formed */
-  char method[MAXLINE];
-  char uri[MAXLINE];
-  char version;
+    /* Parse the request line and check if it's well-formed */
+    char method[MAXLINE];
+    char uri[MAXLINE];
+    char version;
 
-  /* sscanf must parse exactly 3 things for request line to be well-formed */
-  /* version must be either HTTP/1.0 or HTTP/1.1 */
-  if (sscanf(buf, "%s %s HTTP/1.%c", method, uri, &version) != 3
-          || (version != '0' && version != '1')) {
-      clienterror(client->connfd, "400", "Bad Request",
-                  "Proxy received a malformed request");
-      return;
-  }
+    /* sscanf must parse exactly 3 things for request line to be well-formed */
+    /* version must be either HTTP/1.0 or HTTP/1.1 */
+    if (sscanf(buf, "%s %s HTTP/1.%c", method, uri, &version) != 3 ||
+        (version != '0' && version != '1')) {
+        clienterror(client->connfd, "400", "Bad Request",
+                    "Proxy received a malformed request");
+        return;
+    }
 
-  /* Check that the method is GET */
-  if (strcmp(method, "GET") != 0) {
-      clienterror(client->connfd, "501", "Not Implemented",
-                  "Proxy does not implement this method");
-      return;
-  }
+    /* Check that the method is GET */
+    if (strcmp(method, "GET") != 0) {
+        clienterror(client->connfd, "501", "Not Implemented",
+                    "Proxy does not implement this method");
+        return;
+    }
 
-  char host_header[MAXBUF];
-  char other_headers[MAXBUF];
-  host_header[0] = '\0';
-  /* Check if reading request headers caused an error, and read Host header
-     into host_header */
-  if (read_requesthdrs(client, &rio, &host_header, &other_headers)) {
-      return;
-  }
+    char host_header[MAXBUF];
+    char other_headers[MAXBUF];
+    host_header[0] = '\0';
+    /* Check if reading request headers caused an error, and read Host header
+       into host_header, as well as any other extraneous headers  */
+    if (read_requesthdrs(client, &rio, host_header, other_headers)) {
+        return;
+    }
 
-  // /* Parse URI from GET request */
-  // char filename[MAXLINE], cgiargs[MAXLINE];
-  // parse_result result = parse_uri(uri, filename, cgiargs);
-  // if (result == PARSE_ERROR) {
-  //     clienterror(client->connfd, "400", "Bad Request",
-  //                 "Proxy could not parse the request URI");
-  //     return;
-  // }
+    /* Determine connection port, hostname and directory*/
+    char port[MAXLINE];
+    char dir[MAXLINE];
+    char hostname[MAXLINE];
+    if ((res = get_conn_info(client, uri, hostname, port, dir)) < 0) {
+        return;
+    }
 
-  /* Determine connection port, hostname and directory*/
-  int port_int;
-  int res;
-  char port[MAXLINE];
-  char url[MAXLINE];
-  char dir[MAXLINE];
-  char hostname[MAXLINE];
-  //split hostname and directory cmu.edu/hi/this
-  if((res = sscanf(uri, "%s/%s", url, dir)) == 1) { //http:// fix
-    dir[0] = '\0';
-  } else if(res != 2) {
-    clienterror(client->connfd, "400", "malformed uri");
-    //close fd
-    return;
-  }
-  //split url and port
-  if((res = sscanf(url, "%s:%d", hostname, &port_int)) == 1) {
-    snprintf(port, sizeof(port), "%d", 80);
-  } else if(res == 2) {
-    snprintf(port, sizeof(port), "%d", port_int);
-  } else {
-    clienterror(client->connfd, "400", "malformed url");
-    // close client fd
-    return;
-  }
+    /* Establish connection with server */
+    int serverfd;
+    if ((serverfd = open_clientfd(hostname, port)) < 0) {
+        clienterror(client->connfd, "400", "Proxy cannot reach destination",
+                    "Proxy could not conacnt destination server");
+        return;
+    }
 
-  /*Determine if client sent a Host in header */
+    /* Create Host key:value if not passed by client */
+    if (host_header[0] == '\0') {
+        snprintf(host_header, MAXLINE, "Host: %s:%s", hostname, port);
+    }
 
+    /* Create HTTP requst with headers */
+    char get_req[MAXBUF];
+    size_t req_length =
+        snprintf(get_req, sizeof(get_req),
+                 "GET /%s HTTP/1.0\r\n"
+                 "%s"
+                 "User-Agent: %s\r\n"
+                 "Connection: close\r\n"
+                 "Proxy-Connection: close\r\n"
+                 "%s\r\n",
+                 dir, host_header, header_user_agent, other_headers);
 
-  /* Establish connection with server */
-  int serverfd;
-  if((serverfd = open_clientfd(hostname, port)) < 0) {
-    clienterror(client->connfd, "400", "Proxy cannot reach destination");
-    return;
-  }
+    printf("Respnse\n %s\n", get_req);
 
-  /* Create and send HTTP requst with headers */ // CAN I ASSUME THAT REQUEST HEADERS ARE ORDERED, BEST WAY TO PARSE
-  char get_req[MAXLINE];
-  size_t get_req_length = snprintf(get_req, sizeof(get_req), "GET / %s HTTP/1.0\r\n")
+    /* Send the request to the server */
+    if (rio_writen(serverfd, get_req, req_length) < 0) {
+        fprintf(stderr, "Error writing to server\n");
+        return;
+    }
 
-  char request[MAXBUF];
-  size_t request_length = snprintf(request, MAXBUF, )
-
-  // rio_readnb 
-
+    /* Wait for server response, and read it back to the client */
+    // rio_readnb
 }
 
-int main(int argc, char** argv) {
+int main(int argc, char **argv) {
     printf("%s\n", header_user_agent);
 
     /*check if a port was passed */
-    if(argc != 2) {
-      printf("Please pass a port to wait for connections on\n");
-      exit(1);
+    if (argc != 2) {
+        printf("Please pass a port to wait for connections on\n");
+        exit(1);
     }
 
     int listenfd = open_listenfd(argv[1]);
-    if(listenfd < 0) {
-      printf("Failed to listen on port \n", argv[1]);
+    if (listenfd < 0) {
+        printf("Failed to listen on port %s\n", argv[1]);
     }
 
     /*Create space for client info. This section adapted from TINY server */
     client_info client_data;
     client_info *client = &client_data;
 
-    client->connfd = accept(listenfd, (SA*)&client->addr, &client->addrlen);
-    if(client->connfd < 0) {
-      printf("Accept error: %s\n", strerror(errno));
-      exit(1);
+    client->connfd = accept(listenfd, (SA *)&client->addr, &client->addrlen);
+    if (client->connfd < 0) {
+        printf("Accept error: %s\n", strerror(errno));
+        exit(1);
     }
 
     serve(client);
-
+    close(client->connfd);
     return 0;
 }
