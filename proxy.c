@@ -182,6 +182,38 @@ parse_result parse_uri(char *uri, char *filename, char *cgiargs) {
 
 /* The following code has parts adapted from TINY server (tiny.c)
  *
+ * read_responsehdrs - read HTTP response headers.
+ *
+ * Returns true if an error occurred, or false otherwise.
+ */
+bool read_responsehdrs(client_info *client, rio_t *rp) {
+    char buf[MAXLINE];
+    char name[MAXLINE];
+    char value[MAXLINE];
+
+    while (true) {
+        if (rio_readlineb(rp, buf, sizeof(buf)) <= 0) {
+            return true;
+        }
+
+        /* Check for end of request headers */
+        if (strcmp(buf, "\r\n") == 0) {
+            return false;
+        }
+
+        /* Parse header into name and value */
+        if (sscanf(buf, "%[^:]: %[^\r\n]", name, value) != 2) {
+            /* Error parsing header */
+            clienterror(client->connfd, "400", "Bad Request",
+                        "Proxy could not parse request headers");
+            return true;
+        }
+    }
+    return false;
+}
+
+/* The following code has parts adapted from TINY server (tiny.c)
+ *
  * read_requesthdrs - read HTTP request headers. If there is a host header,
  * then it puts it into host. If there is any headers besides Host,
  * User-Agent, Connection, and Proxy-Connection, then it combines them and
@@ -223,13 +255,6 @@ bool read_requesthdrs(client_info *client, rio_t *rp, char *host, char *rest) {
             prev_write += snprintf(rest + prev_write, MAXBUF - prev_write,
                                    "%s: %s\r\n", name, value);
         }
-
-        // /* Convert name to lowercase */
-        // for (size_t i = 0; name[i] != '\0'; i++) {
-        //     name[i] = tolower(name[i]);
-        // }
-
-        printf("%s: %s\n", name, value);
     }
     return host;
 }
@@ -289,8 +314,6 @@ void serve(client_info *client) {
         return;
     }
 
-    printf("%s", buf);
-
     /* Parse the request line and check if it's well-formed */
     char method[MAXLINE];
     char uri[MAXLINE];
@@ -337,6 +360,9 @@ void serve(client_info *client) {
         return;
     }
 
+    rio_t s_rio;
+    rio_readinitb(&s_rio, serverfd);
+
     /* Create Host key:value if not passed by client */
     if (host_header[0] == '\0') {
         snprintf(host_header, MAXLINE, "Host: %s:%s", hostname, port);
@@ -354,7 +380,7 @@ void serve(client_info *client) {
                  "%s\r\n",
                  dir, host_header, header_user_agent, other_headers);
 
-    printf("Respnse\n %s\n", get_req);
+    printf("Resonse Headers: %s\n", get_req);
 
     /* Send the request to the server */
     if (rio_writen(serverfd, get_req, req_length) < 0) {
@@ -362,12 +388,38 @@ void serve(client_info *client) {
         return;
     }
 
-    /* Wait for server response, and read it back to the client */
-    // rio_readnb
+    /* Read first response line, check error code */
+    char error_code[MAXLINE];
+    char error_msg[MAXLINE];
+    char serv_version;
+    /* sscanf must parse exactly 3 things for response line to be well-formed */
+    /* version must be either HTTP/1.0 or HTTP/1.1 */
+    if (sscanf(buf, "HTTP/1.%c %s %s", &serv_version, error_code, error_msg) !=
+            3 ||
+        (version != '0' && version != '1')) {
+        clienterror(client->connfd, "400", "Bad Response",
+                    "Proxy received a malformed Response");
+        close(serverfd);
+        return;
+    }
+
+    if (strcmp(error_code, "200") != 0) {
+        printf("Bad things: %s: %s", error_code, error_msg);
+        close(serverfd);
+        return;
+    }
+
+    /* Read res of server response headers */
+    if (read_responsehdrs(client, &s_rio)) {
+        close(serverfd);
+        return;
+    }
+
+    /* Read in rest of reponse from server */
 }
 
 int main(int argc, char **argv) {
-    printf("%s\n", header_user_agent);
+    // printf("%s\n", header_user_agent);
 
     /*check if a port was passed */
     if (argc != 2) {
