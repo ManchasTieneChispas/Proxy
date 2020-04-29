@@ -1,12 +1,13 @@
 /* @author William Giraldo (wgiraldo)
  *
- * Starter code for proxy lab.
- * Feel free to modify this code in whatever way you wish.
+ * This file implements a concurrent proxy, which support caching of web objects
+ *
+ * To cache objects, it uses the cache library, cache.{h,c}
+ *
  */
 
-/* Some useful includes to help you get started */
-
 #include "csapp.h"
+#include "cache.h"
 
 #include <assert.h>
 #include <ctype.h>
@@ -42,13 +43,6 @@
 #define SERVLEN 8
 #define READLEN 4096
 
-/*
- * Max cache and object sizes
- * You might want to move these to the file containing your cache implementation
- */
-#define MAX_CACHE_SIZE (1024 * 1024)
-#define MAX_OBJECT_SIZE (100 * 1024)
-
 /* Typedef for convenience */
 typedef struct sockaddr SA;
 
@@ -66,7 +60,6 @@ typedef enum { PARSE_ERROR, PARSE_STATIC, PARSE_DYNAMIC } parse_result;
 
 /*
  * String to use for the User-Agent header.
- * Don't forget to terminate with \r\n
  */
 static const char *header_user_agent = "Mozilla/5.0"
                                        " (X11; Linux x86_64; rv:3.10.0)"
@@ -120,66 +113,6 @@ void clienterror(int fd, const char *errnum, const char *shortmsg,
     }
 }
 
-/* This code pas parts adapted from TINY server (tiny.c)
- * parse_uri - parse URI into filename and CGI args
- *
- * uri - The buffer containing URI. Must contain a NUL-terminated string.
- * filename - The buffer into which the filename will be placed.
- * cgiargs - The buffer into which the CGI args will be placed.
- * NOTE: All buffers must hold MAXLINE bytes, and will contain NUL-terminated
- * strings after parsing.
- *
- * Returns the appropriate parse result for the type of request.
- */
-parse_result parse_uri(char *uri, char *filename, char *cgiargs) {
-    /* Assume URI starts with / */
-    if (uri[0] != '/') {
-        return PARSE_ERROR;
-    }
-
-    /* Check if the URI contains "cgi-bin" */
-    if (strncmp(uri, "/cgi-bin/", strlen("/cgi-bin/")) ==
-        0) {                           /* Dynamic content */
-        char *args = strchr(uri, '?'); /* Find the CGI args */
-        if (!args) {
-            *cgiargs = '\0'; /* No CGI args */
-        } else {
-            /* Format the CGI args */
-            if (snprintf(cgiargs, MAXLINE, "%s", args + 1) >= MAXLINE) {
-                return PARSE_ERROR; // Overflow!
-            }
-
-            *args = '\0'; /* Remove the args from the URI string */
-        }
-
-        /* Format the filename */
-        if (snprintf(filename, MAXLINE, ".%s", uri) >= MAXLINE) {
-            return PARSE_ERROR; // Overflow!
-        }
-
-        return PARSE_DYNAMIC;
-    }
-
-    /* Static content */
-    /* No CGI args */
-    *cgiargs = '\0';
-
-    /* Make a valiant effort to prevent directory traversal attacks */
-    if (strstr(uri, "/../") != NULL) {
-        return PARSE_ERROR;
-    }
-
-    /* Check if the client is requesting a directory */
-    bool is_dir = uri[strnlen(uri, MAXLINE) - 1] == '/';
-
-    /* Format the filename; if requesting a directory, use the home file */
-    if (snprintf(filename, MAXLINE, ".%s%s", uri, is_dir ? "home.html" : "") >=
-        MAXLINE) {
-        return PARSE_ERROR; // Overflow!
-    }
-
-    return PARSE_STATIC;
-}
 
 /* The following code has parts adapted from TINY server (tiny.c)
  *
@@ -260,6 +193,12 @@ bool read_requesthdrs(client_info *client, rio_t *rp, char *host, char *rest) {
     return host;
 }
 
+/* parses the the connection info from the URI
+ *
+ * This function takes the URI, and then sets the corresponding values
+ * hostname, port, and dir
+ *
+ */
 int get_conn_info(client_info *client, char *uri, char *hostname, char *port,
                   char *dir) {
     char url[MAXLINE];
@@ -297,7 +236,7 @@ int get_conn_info(client_info *client, char *uri, char *hostname, char *port,
  */
 void *serve(void *vargp) {
     // get client var, detach thread
-    client_info *client = (client_info *)vargp;
+    client_info *client = (client_info*)vargp;
     pthread_detach(pthread_self());
 
     // Get some extra info about the client (hostname/port)
@@ -407,7 +346,8 @@ void *serve(void *vargp) {
         memset(res_buf, 0, bytes_in);
     }
 
-    // cleanup fds and client
+
+    //cleanup fds and client
     close(serverfd);
     close(client->connfd);
     free(client);
@@ -439,11 +379,11 @@ int main(int argc, char **argv) {
         // accept connection
         clientfd = accept(listenfd, (SA *)&client->addr, &client->addrlen);
 
-        // if valid clientfd, then create a thread and serve
+        //if valid clientfd, then create a thread and serve
         if (clientfd >= 0) {
             client->connfd = clientfd;
             pthread_t tid;
-            pthread_create(&tid, NULL, &serve, (void *)client);
+            pthread_create(&tid, NULL, &serve, (void*)client);
         }
     }
     return 0;
