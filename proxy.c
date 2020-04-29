@@ -40,6 +40,7 @@
 
 #define HOSTLEN 256
 #define SERVLEN 8
+#define READLEN 4096
 
 /*
  * Max cache and object sizes
@@ -276,7 +277,7 @@ int get_conn_info(client_info *client, char *uri, char *hostname, char *port,
     // split url and port
     res = sscanf(url, "%[^:]:%s", hostname, port);
     if (res == 1) {
-        port = "80";
+        snprintf(port, MAXLINE, "80");
     } else if (res != 2) {
         clienterror(client->connfd, "400", "malformed url",
                     "Proxy could not parse the URL");
@@ -294,7 +295,11 @@ int get_conn_info(client_info *client, char *uri, char *hostname, char *port,
  *
  * Requires that client contains valid information
  */
-void serve(client_info *client) {
+void *serve(void *vargp) {
+    // get client var, detach thread
+    client_info *client = (client_info *)vargp;
+    pthread_detach(pthread_self());
+
     // Get some extra info about the client (hostname/port)
     int res = getnameinfo((SA *)&client->addr, client->addrlen, client->host,
                           sizeof(client->host), client->serv,
@@ -311,7 +316,7 @@ void serve(client_info *client) {
     /* Read request line */
     char buf[MAXLINE];
     if (rio_readlineb(&rio, buf, sizeof(buf)) <= 0) {
-        return;
+        return NULL;
     }
 
     /* Parse the request line and check if it's well-formed */
@@ -325,14 +330,14 @@ void serve(client_info *client) {
         (version != '0' && version != '1')) {
         clienterror(client->connfd, "400", "Bad Request",
                     "Proxy received a malformed request");
-        return;
+        return NULL;
     }
 
     /* Check that the method is GET */
     if (strcmp(method, "GET") != 0) {
         clienterror(client->connfd, "501", "Not Implemented",
                     "Proxy does not implement this method");
-        return;
+        return NULL;
     }
 
     char host_header[MAXBUF];
@@ -341,7 +346,7 @@ void serve(client_info *client) {
     /* Check if reading request headers caused an error, and read Host header
        into host_header, as well as any other extraneous headers  */
     if (read_requesthdrs(client, &rio, host_header, other_headers)) {
-        return;
+        return NULL;
     }
 
     /* Determine connection port, hostname and directory*/
@@ -349,7 +354,7 @@ void serve(client_info *client) {
     char dir[MAXLINE];
     char hostname[MAXLINE];
     if ((res = get_conn_info(client, uri, hostname, port, dir)) < 0) {
-        return;
+        return NULL;
     }
 
     /* Establish connection with server */
@@ -357,7 +362,7 @@ void serve(client_info *client) {
     if ((serverfd = open_clientfd(hostname, port)) < 0) {
         clienterror(client->connfd, "400", "Proxy cannot reach destination",
                     "Proxy could not conacnt destination server");
-        return;
+        return NULL;
     }
 
     rio_t s_rio;
@@ -386,52 +391,29 @@ void serve(client_info *client) {
     if (rio_writen(serverfd, get_req, req_length) < 0) {
         fprintf(stderr, "Error writing to server\n");
         close(serverfd);
-        return;
+        return NULL;
     }
-
-    // /* Read first response line, check error code */
-    // char error_code[MAXLINE];
-    // char error_msg[MAXLINE];
-    // char serv_version;
-    // /* sscanf must parse exactly 3 things for response line to be well-formed
-    // */
-    // /* version must be either HTTP/1.0 or HTTP/1.1 */
-    // if (sscanf(buf, "HTTP/1.%c %s %s", &serv_version, error_code, error_msg)
-    // !=
-    //         3 ||
-    //     (version != '0' && version != '1')) {
-    //     clienterror(client->connfd, "400", "Bad Response",
-    //                 "Proxy received a malformed Response");
-    //     close(serverfd);
-    //     return;
-    // }
-    //
-    // if (strcmp(error_code, "200") != 0) {
-    //     printf("Bad things: %s: %s", error_code, error_msg);
-    //     close(serverfd);
-    //     return;
-    // }
-    //
-    // /* Read res of server response headers */
-    // if (read_responsehdrs(client, &s_rio)) {
-    //     close(serverfd);
-    //     return;
-    // }
 
     // use calloc to 0 out
     char *res_buf = Calloc((MAX_OBJECT_SIZE) + MAXBUF, 1);
 
     int bytes_in;
-    while ((bytes_in = rio_readnb(&s_rio, res_buf, 4096)) != 0) {
+    while ((bytes_in = rio_readnb(&s_rio, res_buf, READLEN)) != 0) {
         if (rio_writen(client->connfd, res_buf, bytes_in) < 0) {
             fprintf(stderr, "Error writing to server\n");
             close(serverfd);
-            return;
+            return NULL;
         }
         memset(res_buf, 0, bytes_in);
     }
 
+    // cleanup fds and client
     close(serverfd);
+    close(client->connfd);
+    free(client);
+    free(res_buf);
+
+    return NULL;
 }
 
 int main(int argc, char **argv) {
@@ -449,20 +431,20 @@ int main(int argc, char **argv) {
         printf("Failed to listen on port %s\n", argv[1]);
     }
 
-    /*Create space for client info. This section adapted from TINY server */
-    client_info client_data;
-    client_info *client = &client_data;
     int clientfd;
-    while ((clientfd =
-                accept(listenfd, (SA *)&client->addr, &client->addrlen)) >= 0) {
-        client->connfd = clientfd;
-        if (client->connfd < 0) {
-            printf("Accept error: %s\n", strerror(errno));
-            exit(1);
-        }
+    while (1) {
+        // allocate space for client struct on heap
+        client_info *client = Malloc(sizeof(client_info));
 
-        serve(client);
-        close(client->connfd);
+        // accept connection
+        clientfd = accept(listenfd, (SA *)&client->addr, &client->addrlen);
+
+        // if valid clientfd, then create a thread and serve
+        if (clientfd >= 0) {
+            client->connfd = clientfd;
+            pthread_t tid;
+            pthread_create(&tid, NULL, &serve, (void *)client);
+        }
     }
     return 0;
 }
